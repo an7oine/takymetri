@@ -1,0 +1,226 @@
+#!/usr/bin/expect -f
+
+# Geodat-mittaustiedon (Job/Area/U.D.S.) tuonti ja vienti laitteelle sarjaportin (RS232) kautta
+# (c) 2015 Antti Hautaniemi
+
+# Yhteensopivuus: Expect (for Windows NT) 5.21 / TCL 8.0
+
+# Tutki, ollaanko Windows- vai Unix-ymp‰ristˆss‰
+if {[string match Windows* "$tcl_platform(os)"]} {
+
+	# Hakemisto, josta tiedostoja vied‰‰n laitteelle ja tuodaan laitteelta
+	set tyohakemisto C:\\DATA
+	# Portit, joista Geodat-laitteita etsit‰‰n
+	set sarjaportit [list COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9 COM10 COM11 COM12 COM13 COM14 COM15]
+
+} else {
+	set tyohakemisto ~/data
+	set sarjaportit [glob -nocomplain /dev/tty{.,S,USBS}*]
+}
+
+# Sarjaportin tiedonsiirtoprotokolla (baud-nopeus, pariteetti:(n)one/(o)dd/(e)ven/(m)ark/(s)pace, databitit, stop-bitit)
+set sarjaprotokolla 9600,n,8,1
+
+
+##########################
+# Ohjelmakoodi alkaa t‰st‰
+
+log_user 0
+set send_slow {1024 .01}
+set timeout 30
+
+set areat [list]
+set jobit [list]
+set udsit [list]
+set vapaa_muisti 0
+
+proc yhteysvirhe {} {
+	send_user "\nYhteys laitteeseen katkesi! "
+	expect_user \n; exit
+}
+
+# Lataa luettelot laitteella olevista tiedostoista
+proc lataa_luettelot {} {
+	global areat jobit udsit vapaa_muisti
+	set areat [list]
+	set jobit [list]
+	set udsit [list]
+	
+	sleep 0.2; expect *
+	send -s M\r
+	expect -timeout 2 timeout yhteysvirhe {
+		-re "(.+)\r" {set vapaa_muisti $expect_out(1,string); exp_continue} timeout {yhteysvirhe}
+		>
+	}
+	send -s O*C\r
+	expect -timeout 2 timeout yhteysvirhe {
+		-re "15=(.+)\r" {lappend areat $expect_out(1,string); exp_continue}
+		-re "50=(.+)\r" {lappend jobit $expect_out(1,string); exp_continue}
+		>
+	}
+	send -s OUC\r
+	expect -timeout 2 timeout yhteysvirhe {
+		-re "42=(.+)\r" {lappend udsit $expect_out(1,string); exp_continue}
+		>
+	}
+}
+
+# K‰ytt‰j‰lle tulostettavat otsikot
+proc paaotsikko {} {
+	global sarjaportti vapaa_muisti
+	send_user "\nGeodat-laite portissa $sarjaportti, $vapaa_muisti tavua vapaana\n"
+	send_user "Hakemisto: (A)rea / (J)ob / (U).D.S. / poistu:(Enter)? "
+}
+proc area_otsikko {} {
+	global areat
+	send_user "\nArea-tiedostot : $areat\n"
+	send_user "Komento: (T)uo / (V)ie / (P)oista / poistu:(Enter)? "
+}
+proc job_otsikko {} {
+	global jobit
+	send_user "\nJob-tiedostot : $jobit\n"
+	send_user "Komento: (T)uo / (V)ie / (P)oista / poistu:(Enter)? "
+}
+proc uds_otsikko {} {
+	global udsit
+	send_user "\nU.D.S.-tiedostot : $udsit\n"
+	send_user "Komento: (T)uo / (V)ie / (P)oista / poistu:(Enter)? "
+}
+
+# Tiedostojen tuonti, vienti ja poisto laitteelta
+proc tuonti {luettelo tunnus tarkenne koodi} {
+	global tyohakemisto
+	foreach tiedosto $luettelo {
+		send_user "Tuo $tunnus $tiedosto (k/E)? "
+		expect_user -re "(k|K)\r?\n" {
+			if { [catch {open [file join $tyohakemisto $tiedosto.$tarkenne] w} tuloste] } {
+				send_user "Tiedostoon ei voitu tallentaa\n"
+				continue
+			}
+			sleep 0.2; expect *
+			send -s O$koodi=$tiedosto\r
+			expect -timeout 2 timeout yhteysvirhe {
+				-re "(.*)\r?\n" {puts $tuloste "$expect_out(1,string)"; exp_continue}
+				>
+			}
+			close $tuloste
+			send_user "Valmis\n"
+		} timeout {send_user \n} \n
+	}
+}
+proc vienti {tunnus tarkenne koodi} {
+	global tyohakemisto
+	foreach tiedostopolku [glob -nocomplain [file join $tyohakemisto *]] {
+		if {[string match "*.$tarkenne" [string tolower $tiedostopolku]]} {
+			set tiedosto [file rootname [file tail $tiedostopolku]]
+			send_user "Vie $tunnus $tiedosto (k/E)? "
+			expect_user -re "(k|K)\r?\n" {
+				if { [catch {open $tiedostopolku r} syote] } {
+					send_user "Tiedostosta ei voitu lukea\n"
+					continue
+				}
+				sleep 0.2; expect *
+				send -s L$koodi=$tiedosto\r
+				expect -timeout 2 timeout yhteysvirhe {
+					-re "\[*]" {send -s [read $syote]; send -s ">"; exp_continue}
+					>
+				}
+				close $syote
+				end_user "Valmis\n"
+			} timeout {send_user \n} \n
+		}
+	}
+}
+proc poisto {luettelo tunnus koodi} {
+	foreach tiedosto $luettelo {
+		send_user "Poista $tunnus $tiedosto (k/E)? "
+		expect_user -re "(k|K)\r?\n" {
+			sleep 0.2; expect *
+			send -s K$koodi=$tiedosto\r
+			expect -timeout 2 timeout yhteysvirhe >
+		} timeout {send_user \n} \n
+	}
+}
+
+# P‰‰ohjelma :
+
+# Varmistetaan ja tarvittaessa luodaan tyˆhakemisto
+if {[file exists $tyohakemisto] && ! [file isdirectory $tyohakemisto]} {
+	send_user "$tyohakemisto ei ole hakemisto, ei voida jatkaa! "
+	expect_user timeout {send_user \n} \n; exit
+}
+while {! [file exists $tyohakemisto]} {
+	send_user "Luodaanko hakemisto $tyohakemisto (k/E)? "
+	expect_user -re "(k|K)\r?\n" {
+		if {! [catch {file mkdir $tyohakemisto}]} {break}
+	} timeout {send_user \n} \n
+	send_user "Ei voida jatkaa! "
+	expect_user timeout {send_user \n} \n; exit
+}
+
+# Etsi Geodat-laitteita tietokoneen sarjaporteista
+send_user "Muodostetaan yhteys laitteeseen...\n"
+foreach sarjaportti [concat $sarjaportit ei_laitetta] {
+	if {[catch {open $sarjaportti r+} kahva]} {continue}
+	fconfigure $kahva -mode $sarjaprotokolla -buffering none -translation binary
+	spawn -noecho -open $kahva
+
+	# kokeile vastaako laite muistim‰‰r‰n kyselyyn
+	sleep 0.2; expect *
+	send -s M\r
+	expect -timeout 2 > {
+		send_user "Laite portissa $sarjaportti, jatka (K/e)? "
+		expect_user -re "(e|E)\r?\n" {} timeout {send_user \n} \n {break}
+	}
+	
+	# muuten suljetaan ja siirryt‰‰n seuraavaan porttiin
+	close
+}
+
+if {$sarjaportti == "ei_laitetta"} {
+	send_user "\nGeodat-laitteita ei tunnistettu! "
+	expect_user timeout {send_user \n} \n; exit 
+}
+
+lataa_luettelot
+paaotsikko
+expect_user {
+	-re "(a|A)\r?\n" {
+		area_otsikko
+		expect_user {
+			-re "(t|T)\r?\n" {tuonti $areat AREA are I; area_otsikko; exp_continue}
+			-re "(v|V)\r?\n" {vienti AREA are I; lataa_luettelot; area_otsikko; exp_continue}
+			-re "(p|P)\r?\n" {poisto $areat AREA I; lataa_luettelot; area_otsikko; exp_continue}
+			timeout {send_user \n}
+			\n
+		}
+		paaotsikko; exp_continue
+	}
+	-re "(j|J)\r?\n" {
+		job_otsikko
+		expect_user {
+			-re "(t|T)\r?\n" {tuonti $jobit JOB job M; job_otsikko; exp_continue}
+			-re "(v|V)\r?\n" {vienti JOB job M; lataa_luettelot; job_otsikko; exp_continue}
+			-re "(p|P)\r?\n" {poisto $jobit JOB M; lataa_luettelot; job_otsikko; exp_continue}
+			timeout {send_user \n}
+			\n
+		}
+		paaotsikko; exp_continue
+	}
+	-re "(u|U)\r?\n" {
+		uds_otsikko
+		expect_user {
+			-re "(t|T)\r?\n" {tuonti $udsit U.D.S. uds U; uds_otsikko; exp_continue}
+			-re "(v|V)\r?\n" {vienti U.D.S. uds U; lataa_luettelot; uds_otsikko; exp_continue}
+			-re "(p|P)\r?\n" {poisto $udsit U.D.S. U; lataa_luettelot; uds_otsikko; exp_continue}
+			timeout {send_user \n}
+			\n
+		}
+		paaotsikko; exp_continue
+	}
+	timeout {send_user \n}
+	\n
+}
+
+# Sulje sarjaportti lopuksi
+close
