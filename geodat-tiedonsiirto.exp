@@ -191,7 +191,7 @@ foreach sarjaportti [concat $sarjaportit ei_laitetta] {
 	send -s M\r
 	expect -timeout 5 > {
 		# Hyväksytään ensimmäinen löydetty laite
-		if {$perustoiminnot} {send_user "$sarjaportti\n"}
+		send_user "$sarjaportti\n"
 		break
 	}
 	
