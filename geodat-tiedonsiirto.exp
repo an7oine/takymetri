@@ -13,12 +13,12 @@ if {[string match Windows* "$tcl_platform(os)"]} {
 	# Portit, joista Geodat-laitteita etsit‰‰n
 	set sarjaportit [list COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9 COM10 COM11 COM12 COM13 COM14 COM15]
 	# Rivinvaihdot (crlf / lf)
-	set rivinvaihdot { binary crlf }
+	set rivinvaihdot { binary cr }
 
 } else {
 	set tyohakemisto ~/data
 	set sarjaportit [glob -nocomplain /dev/{cu.usbserial,tty{S*,USBS*}}]
-	set rivinvaihdot { binary lf }
+	set rivinvaihdot { auto cr }
 }
 
 # Laitteeseen asetettu tiedonsiirtoprotokolla (baud-nopeus, pariteetti:(n)one/(o)dd/(e)ven/(m)ark/(s)pace, databitit, stop-bitit)
@@ -30,7 +30,7 @@ set sarjaprotokolla 9600,n,8,1
 # Ohjelmakoodi alkaa t‰st‰
 
 log_user 0
-set send_slow {1024 .01}
+set send_slow {1024 .05}
 set timeout 600
 
 set areat [list]
@@ -110,9 +110,14 @@ proc vienti {tunnus tarkenne koodi} {
 				
 				sleep 1; expect *
 				send -s L$koodi=$tiedosto\r
-				expect -timeout 5 -ex * { send -s [read $syote]; send -s ">"; exp_continue
-				} timeout { yhteysvirhe } >
-				
+				expect -timeout 5 -ex * {
+                    foreach rivi [split [read -nonewline $syote] \n] {
+                        send -s $rivi\r
+                    }
+                    send -s >
+                    expect >
+				} timeout { yhteysvirhe }
+                
 				close $syote
 				send_user "Valmis\n"
 			} \n
@@ -181,6 +186,11 @@ expect_user -timeout 2 \n {set perustoiminnot 0} timeout {set perustoiminnot 1}
 
 foreach sarjaportti [concat $sarjaportit ei_laitetta] {
 
+	if {$sarjaportti == "ei_laitetta"} {
+		send_user "\nGeodat-laitteita ei tunnistettu! "
+		expect_user \n {exit}
+	}
+
 	# Yritet‰‰n avata tiedostokahva
 	if {[catch {open $sarjaportti r+} kahva]} {continue}
 	fconfigure $kahva -mode $sarjaprotokolla -buffering none -blocking 0 -translation $rivinvaihdot
@@ -197,11 +207,6 @@ foreach sarjaportti [concat $sarjaportit ei_laitetta] {
 	
 	# Suljetaan tiedostokahva ja siirryt‰‰n seuraavaan porttiin
 	close
-}
-
-if {$sarjaportti == "ei_laitetta"} {
-	send_user "\nGeodat-laitteita ei tunnistettu! "
-	expect_user \n {exit}
 }
 
 lataa_luettelot
